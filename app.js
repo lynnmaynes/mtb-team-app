@@ -6,7 +6,7 @@
  * merge field-by-field: newest edit wins, nothing else is overwritten.
  */
 'use strict';
-const APP_VERSION = 'team-2.0.0';
+const APP_VERSION = 'team-2.0.1';
 const STRAVA_CLIENT_ID = '292465';
 const INTRO_VIDEO = 'https://www.youtube.com/watch?v=lclyYasr43Y';
 function introCard(full) {   // the booklet asks every new starter to watch this first
@@ -407,6 +407,7 @@ function softRender() {
   const y = scrollY; render(); scrollTo(0, y);
 }
 
+const SEASON_RE = /^\d{4}-\d{2}$/;
 const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 function vSetup() {
@@ -843,7 +844,9 @@ function adminCard() {
   return `<div class="card admin"><h3>Admin</h3>
    <label class="f">Team name</label><input data-f="team|settings|main|teamName" value="${esc(T_().settings?.main?.teamName || '')}">
    <label class="f">Season (parents of under-18s confirm permission once per season)</label><input data-f="team|settings|main|season" placeholder="${esc(T_()._season || 'e.g. 2026-27')}" value="${esc(T_().settings?.main?.season || '')}">
-   ${relayMode() ? '' : '<div class="warnbox">Invite codes need this phone to be signed in with an invite code too: ⚙ → Switch this phone to an invite code.</div>'}
+   <div class="sub">Format 2026-27. Leave blank and it changes automatically on Aug 1.</div>
+   ${T_().settings?.main?.season && !SEASON_RE.test(T_().settings.main.season) ? '<div class="warnbox">This season value doesn\'t look right. Clear it or type one like 2026-27.</div>' : ''}
+   ${relayMode() ? '' : '<div class="warnbox">To make invite codes, sign this phone in with your own invite code first. <button class="btn small mt" id="admSwitch">Enter my invite code</button></div>'}
    <div class="sub mt">Strava places used in this app: <b>${connected}</b> (the Strava API limit of 10 is shared with the two-person app).</div>
    <h3 class="mt">Ride groups</h3>
    ${gs.map(g => `<div class="row mt"><input class="grow" data-f="team|groups|${g}|name" value="${esc(groupName(g))}" ${T_().groups[g].retired ? 'disabled' : ''}>
@@ -980,6 +983,7 @@ function vSettings(a) {
      <label class="f">My default track for strength sessions</label><select id="sTrack">${['Home', 'Gym'].map(x => `<option ${defTrack(me()) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
      <label class="f">Default rest timer between sets (seconds)</label><input id="sRest" inputmode="numeric" value="${esc(cfg.restSec)}">
      <button class="btn block" id="sSaveR">Save</button><button class="btn block sec small" id="sSignOut">Sign out of this phone</button></div>` : `
+   ${configured() ? `<div class="codebox" id="switchBox"><b>Switch this phone to an invite code</b><div class="sub">Type the code here (not in any other field). Your training stays as it is.</div><input id="sCodeSw" placeholder="ABCD-EFGH" autocapitalize="characters" autocomplete="off"><button class="btn block small mt" id="sCodeSwGo">Use invite code</button></div>` : ''}
    ${!configured() ? `<div class="card sub">Got an invite code? <a href="#" id="sUseCode">Use it here</a>.</div>` : ''}
    ${people().length ? `<label class="f">Who is using this phone?</label><select id="sMe"><option value="">Choose…</option>${people().sort((a, b) => pname(a).localeCompare(pname(b))).map(p => `<option value="${p}" ${cfg.me === p ? 'selected' : ''}>${esc(pname(p))}</option>`).join('')}</select>`
      : `<input type="hidden" id="sMe" value=""><div class="sub">Fill in the GitHub details below and tap <b>Save &amp; sync</b> - then pick your name.</div>`}
@@ -991,7 +995,7 @@ function vSettings(a) {
    <label class="f">Default rest timer between sets (seconds)</label><input id="sRest" inputmode="numeric" value="${esc(cfg.restSec)}">
    <details class="mt"><summary class="sub">Advanced</summary><label class="f">API base URL</label><input id="sApi" autocapitalize="off" value="${esc(cfg.api)}"></details>
    <button class="btn block" id="sSave">Save & sync</button>
-   ${configured() && !relayMode() ? `<details class="mt"><summary class="sub">Switch this phone to an invite code</summary><input id="sCodeSw" placeholder="ABCD-EFGH"><button class="btn block sec small" id="sCodeSwGo">Use invite code</button></details>` : ''}</div>`}
+</div>`}
    ${configured() && P ? myTeamCard() : ''}
    ${configured() && P ? stravaSettings() : ''}
    ${configured() && P ? scheduleCard() : ''}
@@ -1006,6 +1010,7 @@ function vSettings(a) {
    <button class="btn block danger" id="sReset">Clear data on this phone</button>
    <p class="sub mt">MTB 12 Team (pilot) · app v${APP_VERSION}</p></div>`;
   if ($('#sUseCode')) $('#sUseCode').onclick = e => { e.preventDefault(); vSetup(); };
+  if ($('#admSwitch')) $('#admSwitch').onclick = () => { const b = $('#switchBox'); if (b) { b.scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(() => $('#sCodeSw').focus(), 400); } };
   if ($('#sCodeSwGo')) $('#sCodeSwGo').onclick = () => { const c = $('#sCodeSw').value.trim(); if (!c) return; cfg = { ...cfg, me: '', token: '' }; LS.set('cfg', cfg); vJoin(c); };
   if ($('#sSaveR')) $('#sSaveR').onclick = () => { cfg = { ...cfg, restSec: +$('#sRest').value || 60 }; LS.set('cfg', cfg); if (defTrack(me()) !== $('#sTrack').value) setVal(me(), 'settings', 'main', 'defaultTrack', $('#sTrack').value); toast('Saved'); };
   if ($('#sSignOut')) $('#sSignOut').onclick = () => { if (confirm('Sign out of this phone? Your training stays saved; you will need a new invite code from your coach to sign back in.')) { Object.keys(localStorage).filter(k => k.startsWith('mtbteam.')).forEach(k => localStorage.removeItem(k)); location.href = location.pathname; } };
@@ -1040,6 +1045,7 @@ document.addEventListener('change', e => {
   let v = el.value.trim();
   if (el.hasAttribute('data-num') && v !== '') { const n = Number(v.replace(',', '.')); v = isNaN(n) ? v : n; }
   if ((field === 'rpe' || field === 'q9') && v !== '') v = Number(v);
+  if (file_ === 'team' && field === 'season' && v !== '' && !SEASON_RE.test(v)) { toast('Season should look like 2026-27 (leave blank for automatic).'); el.value = T_().settings?.main?.season && SEASON_RE.test(T_().settings.main.season) ? T_().settings.main.season : ''; return; }
   if (coll === 'rides') saveRideDraft(key);   // first entry on a new ride saves its date + rider too
   setVal(file_, coll, key, field, v === '' ? null : v);
   if ((coll === 'sets' || coll === 'gsets') && v !== '' && v !== null && field !== 'band') autoDate(key.split('-').slice(0, 2).join('-'));
