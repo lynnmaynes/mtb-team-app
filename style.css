@@ -124,3 +124,6 @@ nav#tabs a{font-size:11px;padding:12px 0}
 .tseg{overflow-x:auto}.tseg button{white-space:nowrap;font-size:13px}
 .admin .person{border-top:1px solid var(--line);padding:8px 0}.admin .person.off{opacity:.5}
 .admin .row label{display:flex;align-items:center;gap:4px;margin-right:10px}.admin .row label input{width:auto}
+.bigcode{font-size:30px;font-weight:900;letter-spacing:4px;text-align:center;margin:10px 0;color:var(--acc2);font-variant-numeric:tabular-nums}
+.codebox{border:1px dashed var(--acc);border-radius:12px;padding:10px;margin-top:8px}
+.adm-acts{flex-wrap:wrap;gap:6px}

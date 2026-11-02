@@ -6,7 +6,7 @@
  * merge field-by-field: newest edit wins, nothing else is overwritten.
  */
 'use strict';
-const APP_VERSION = 'team-1.0.1';
+const APP_VERSION = 'team-2.0.0';
 const STRAVA_CLIENT_ID = '292465';
 const INTRO_VIDEO = 'https://www.youtube.com/watch?v=lclyYasr43Y';
 function introCard(full) {   // the booklet asks every new starter to watch this first
@@ -84,6 +84,7 @@ function mergeFile(A = {}, B = {}) {
   const out = {};
   for (const coll of new Set([...Object.keys(A), ...Object.keys(B)])) {
     const a = A[coll], b = B[coll];
+    if (coll.startsWith('_')) { if (a !== undefined) out[coll] = a; continue; }   // server-computed (_pending, _season): never sent back
     if (typeof (a ?? b) !== 'object' || Array.isArray(a ?? b)) { out[coll] = b ?? a; continue; }
     out[coll] = {};
     for (const k of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) out[coll][k] = mergeRec(a?.[k], b?.[k]);
@@ -106,7 +107,31 @@ async function gh(method, path, body) {
   if (!r.ok) { const t = await r.text(); const e = new Error(`GitHub ${r.status}: ${t.slice(0, 140)}`); e.status = r.status; throw e; }
   return r.json();
 }
+/* ---- phase 2: invite-code sign-in through the relay (no GitHub token on the phone) ---- */
+const relayMode = () => !!cfg.key;
+let RELAY = cfg.relay || '';
+async function relayUrl() {
+  if (RELAY) return RELAY;
+  const r = await fetch('relay.json', { cache: 'no-store' }); RELAY = (await r.json()).url.replace(/\/$/, ''); return RELAY;
+}
+let consentGate = null;   // { link } when a parent's permission is needed before syncing
+async function relay(method, path, body, auth = true) {
+  const r = await fetch(`${await relayUrl()}${path}`, { method, cache: 'no-store',
+    headers: { ...(auth && cfg.key ? { Authorization: `Bearer ${cfg.key}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = new Error(j.error || `Relay ${r.status}`); e.status = r.status; Object.assign(e, j);
+    if (j.signedOut) { cfg = { ...cfg, key: '', me: '' }; LS.set('cfg', cfg); setTimeout(render, 0); }
+    if (j.needConsent) { consentGate = { link: j.link }; setTimeout(render, 0); }
+    throw e;
+  }
+  if (consentGate && auth) { consentGate = null; setTimeout(render, 0); }
+  return j;
+}
 async function ghGetJson(path) {
+  if (relayMode()) { try { const j = await relay('GET', `/file?path=${encodeURIComponent(path)}`); return { data: j.data ?? null, sha: j.sha ?? null }; }
+    catch (e) { if (e.status === 404) return { data: null, sha: null }; throw e; } }
   const j = await gh('GET', path); if (!j) return { data: null, sha: null };
   let text;
   if (j.content) text = b64dec(j.content);
@@ -114,6 +139,7 @@ async function ghGetJson(path) {
   return { data: JSON.parse(text), sha: j.sha };
 }
 async function ghPutJson(path, data, sha, msg) {
+  if (relayMode()) return (await relay('PUT', '/file', { path, data, sha })).sha;
   const j = await gh('PUT', path, { message: msg, content: b64enc(JSON.stringify(data, null, 1)), ...(sha ? { sha } : {}) });
   return j.content.sha;
 }
@@ -123,6 +149,7 @@ let syncTimer = null;
 function scheduleSync(ms = 3000) { clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(), ms); }
 async function syncFile(key, writable) {
   const path = key === 'team' ? 'team.json' : `data/${key}.json`;
+  if (!writable && relayMode() && key !== 'team') { try { D[key] = (await ghGetJson(path)).data || {}; } catch (e) { if (e.status !== 403) throw e; D[key] = {}; } return; }
   for (let attempt = 0; attempt < 4; attempt++) {
     const { data: remote, sha } = await ghGetJson(path);
     const local = D[key] || {};
@@ -150,7 +177,7 @@ async function syncNow(manual) {
     const b = buddyPick(me()); if (b && b !== me()) others.add(b);
     if (isCoach()) for (const x of people()) if (isCoach(x) && x !== me()) others.add(x);   // to learn who shares their training
     for (const x of others) if (people().includes(x)) await syncFile(x, false);
-    if (isAdmin()) await createMissingFiles();
+    if (isAdmin() && !relayMode()) await createMissingFiles();
     await stravaSync();
     LS.set('data', D); LS.set('shas', shas);
     syncState.last = Date.now(); LS.set('lastSync', syncState.last);
@@ -180,7 +207,7 @@ async function loadProgram() {
   if (!data) throw new Error('program.json not found in the repo. Run the PC sync script with --init first.');
   P = data; LS.set('program', P);
 }
-const configured = () => cfg.owner && cfg.repo && cfg.token && cfg.me;
+const configured = () => !!cfg.me && (relayMode() || !!(cfg.owner && cfg.repo && cfg.token));
 
 /* ---------------- Strava ----------------
  * The phone never talks to Strava directly. It writes requests into its own data file and pokes
@@ -202,7 +229,7 @@ async function stravaSync() {
   try { const { data } = await ghGetJson('strava/state.json'); if (data) { SV = data; LS.set('strava', SV); } } catch { }
   const why = LS.get('kick', ''); if (!why) return;
   try {
-    const path = `strava/kick/${me()}.json`; const cur = await gh('GET', path);
+    const path = `strava/kick/${me()}.json`; const cur = relayMode() ? null : await gh('GET', path);
     await ghPutJson(path, { t: Date.now(), why }, cur?.sha, `${pname(me())} phone: Strava ${why}`);
     LS.set('kick', '');
   } catch (e) { if (!(e.status === 409 || e.status === 422)) throw e; }
@@ -368,6 +395,7 @@ function render() {
   prep(); header(); paintSync();
   const [r, a] = (location.hash.slice(1) || 'today').split('/');
   document.querySelectorAll('#tabs a').forEach(x => x.classList.toggle('on', x.dataset.tab === r || (r === 'session' || r === 'hiit') && x.dataset.tab === 'week' || r === 'athlete' && x.dataset.tab === 'team'));
+  if (consentGate && configured()) return vConsentGate();
   if (!configured() || !P) { if (r !== 'settings') return vSetup(); }
   const tt = $('#teamTab'); if (tt) tt.hidden = !(configured() && isCoach());
   const v = { today: vToday, week: vWeek, session: vSession, hiit: vHiit, stretch: vStretch, rides: vRides, ride: vRide, progress: vProgress, goals: vGoals, team: vTeam, athlete: vAthlete, settings: vSettings }[r] || vToday;
@@ -379,11 +407,62 @@ function softRender() {
   const y = scrollY; render(); scrollTo(0, y);
 }
 
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 function vSetup() {
   view().innerHTML = `<h1>Welcome 👋</h1>
   <div class="card"><p>MTB 12 Team logs the MTB Fitness 12-week program (home or gym) for our team. Your coaches see your workouts; your goal sheet stays private unless you share it.</p>
-  <p class="sub">Your coach will give you the details to enter in Settings.</p>
-  <a class="btn block" href="#settings">Set up this phone</a></div>`;
+  <label class="f">Your invite code (from your coach)</label><input id="jCode" placeholder="ABCD-EFGH" autocapitalize="characters" autocomplete="off">
+  <button class="btn block" id="jGo">Continue</button></div>`;
+  $('#jGo').onclick = () => { const c = $('#jCode').value.trim(); if (c) vJoin(c); };
+}
+/* joining with an invite code (+ parent permission for under-18s) */
+async function vJoin(code) {
+  code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^(.{4})(.{4})$/, '$1-$2');
+  if (isIOS() && !standalone()) {   // iPhone home-screen apps keep their own storage, so join from inside the installed app
+    view().innerHTML = `<h1>Install first 📲</h1><div class="card"><p>On iPhone, add MTB 12 Team to your Home Screen first, then join from there:</p>
+     <ol><li>Tap the <b>Share</b> button (square with an arrow) at the bottom of Safari.</li><li>Tap <b>Add to Home Screen</b> → <b>Add</b>.</li>
+     <li>Open <b>MTB 12 Team</b> from your Home Screen and enter this code:</li></ol><div class="bigcode">${esc(code)}</div></div>`;
+    return;
+  }
+  view().innerHTML = `<h1>Joining…</h1><div class="card sub">Checking your invite code.</div>`;
+  let info;
+  try { info = await relay('POST', '/join/check', { code }, false); }
+  catch (e) { view().innerHTML = `<h1>Hmm…</h1><div class="card"><p>${esc(e.message)}</p><a class="btn block sec" href="#">Try another code</a></div>`; return; }
+  const who = `<div class="card"><h3>Welcome, ${esc(info.name)}!</h3><div class="sub">${esc(info.role)}${info.group ? ' · ' + esc(info.group) : ''}${info.team ? ' · ' + esc(info.team) : ''}</div></div>`;
+  if (info.consentNeeded) {
+    view().innerHTML = `<h1>Ask a parent</h1>${who}${parentAskCard(info.link, info.name)}
+      <button class="btn block" id="jRetry">I've got permission - continue</button>`;
+    wireParentAsk(info.link, info.name); $('#jRetry').onclick = () => vJoin(code); return;
+  }
+  view().innerHTML = `<h1>Ready to go</h1>${who}<div class="card sub">Your coach${info.role === 'Athlete' ? ' (ride lead and head coach)' : 'es'} can see the workouts you log here. Your goal sheet stays private unless you choose to share it.</div>
+    <button class="btn block" id="jJoin">Join the team</button>`;
+  $('#jJoin').onclick = async () => {
+    try {
+      const j = await relay('POST', '/join', { code }, false);
+      cfg = { ...cfg, key: j.key, me: j.pid, relay: await relayUrl(), owner: '', token: '' }; LS.set('cfg', cfg);
+      D = {}; shas = {}; LS.set('data', D); history.replaceState(null, '', location.pathname + '#today');
+      toast(`Welcome, ${j.name}!`); await syncNow(true); render();
+      if (!standalone() && !isIOS()) toast('Tip: ⋮ menu → Add to Home screen');
+    } catch (e) { toast(e.message); if (e.needConsent) vJoin(code); }
+  };
+}
+function parentAskCard(link, name) {
+  return `<div class="card"><p>Because you're under 18, a parent or guardian needs to say it's OK${name ? '' : ''} before you can use the app${consentGate ? ' this season' : ''}.</p>
+   <p class="sub">Send them this link. They'll see what the app records and who can see it, and can approve it on their own phone or computer.</p>
+   <button class="btn block" id="pSend">Send to parent</button><input class="mt" id="pLink" readonly value="${esc(link)}"></div>`;
+}
+function wireParentAsk(link, name) {
+  $('#pSend').onclick = async () => {
+    const text = `Hi! Can you give permission for ${name || 'me'} to use the MTB 12 Team training app? It takes a minute:`;
+    if (navigator.share) { try { await navigator.share({ title: 'MTB 12 Team - permission', text, url: link }); return; } catch { } }
+    try { await navigator.clipboard.writeText(`${text} ${link}`); toast('Link copied - paste it into a text to your parent'); } catch { $('#pLink').select(); toast('Copy the link below'); }
+  };
+}
+function vConsentGate() {
+  view().innerHTML = `<h1>Permission needed</h1><div class="card"><p>It's a new season - a parent or guardian needs to give permission again before your training syncs.</p></div>
+    ${parentAskCard(consentGate.link, pname(me()))}<button class="btn block" id="pCheck">Check again</button>`;
+  wireParentAsk(consentGate.link, pname(me())); $('#pCheck').onclick = () => syncNow(true);
 }
 
 function sessionCard(s, opts = {}) {
@@ -758,11 +837,13 @@ function myTeamCard() {
    ${isCoach() ? `<label class="row mt"><input type="checkbox" id="sShareTr" style="width:auto" ${val(me(), 'settings', 'main', 'shareTraining') ? 'checked' : ''}><span>Let the other coaches see my own training</span></label>` : ''}</div>`;
 }
 function adminCard() {
-  const gs = groups(true); const ps = Object.keys(T_().people || {}).sort((a, b) => pname(a).localeCompare(pname(b)));
+  const gs = groups(true); const ps = Object.keys(T_().people || {}).filter(x => !tp(x, 'removed')).sort((a, b) => pname(a).localeCompare(pname(b)));
   const connected = Object.values(sv().athletes || {}).filter(a => a && !a.needsReconnect).length;
   const gsel = (pid) => `<select data-adm="${pid}|group"><option value="">No group</option>${groups().map(g => `<option value="${g}" ${groupOf(pid) === g ? 'selected' : ''}>${esc(groupName(g))}</option>`).join('')}</select>`;
   return `<div class="card admin"><h3>Admin</h3>
    <label class="f">Team name</label><input data-f="team|settings|main|teamName" value="${esc(T_().settings?.main?.teamName || '')}">
+   <label class="f">Season (parents of under-18s confirm permission once per season)</label><input data-f="team|settings|main|season" placeholder="${esc(T_()._season || 'e.g. 2026-27')}" value="${esc(T_().settings?.main?.season || '')}">
+   ${relayMode() ? '' : '<div class="warnbox">Invite codes need this phone to be signed in with an invite code too: ⚙ → Switch this phone to an invite code.</div>'}
    <div class="sub mt">Strava places used in this app: <b>${connected}</b> (the Strava API limit of 10 is shared with the two-person app).</div>
    <h3 class="mt">Ride groups</h3>
    ${gs.map(g => `<div class="row mt"><input class="grow" data-f="team|groups|${g}|name" value="${esc(groupName(g))}" ${T_().groups[g].retired ? 'disabled' : ''}>
@@ -773,7 +854,11 @@ function adminCard() {
      <div class="grid2 mt"><select data-adm="${pid}|role">${Object.entries(ROLE_LABEL).map(([k, l]) => `<option value="${k}" ${roleOf(pid) === k ? 'selected' : ''}>${l}</option>`).join('')}</select>${gsel(pid)}</div>
      <div class="row mt sub"><label><input type="checkbox" data-admchk="${pid}|minor" ${tp(pid, 'minor') ? 'checked' : ''}> Under 18</label>
      <label><input type="checkbox" data-admchk="${pid}|admin" ${tp(pid, 'admin') ? 'checked' : ''} ${pid === me() ? 'disabled' : ''}> Admin</label>
-     <label><input type="checkbox" data-admchk="${pid}|active" ${tp(pid, 'active') !== false ? 'checked' : ''} ${pid === me() ? 'disabled' : ''}> Active</label></div></div>`).join('')}
+     <label><input type="checkbox" data-admchk="${pid}|active" ${tp(pid, 'active') !== false ? 'checked' : ''} ${pid === me() ? 'disabled' : ''}> Active</label></div>
+     ${relayMode() ? `<div class="sub mt" id="ast-${pid}">${admStatusLine(pid)}</div>
+     <div class="row mt adm-acts">${tp(pid, 'active') !== false ? `<button class="btn small" data-ainvite="${pid}">Invite code</button>` : ''}
+       <button class="btn small sec" data-asignout="${pid}">Sign out phones</button>${pid !== me() ? `<button class="btn small danger" data-adelete="${pid}">Remove + delete data</button>` : ''}</div>
+     <div id="acode-${pid}"></div>` : ''}</div>`).join('')}
    <h3 class="mt">Add a person</h3>
    <input id="aName" placeholder="First name (shown in the app)">
    <div class="grid2 mt"><select id="aRole">${Object.entries(ROLE_LABEL).map(([k, l]) => `<option value="${k}" ${k === 'athlete' ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -782,11 +867,43 @@ function adminCard() {
    <button class="btn block" id="aAdd">Add person</button>
    <div class="sub mt">Pilot phase 1: new people join with a GitHub token for mtb-team-data. Invite codes come in phase 2.</div></div>`;
 }
+let ADM = null;   // /admin/status: phones, open invite codes, parent permission per person
+function admStatusLine(pid) {
+  const a = ADM?.people?.[pid]; if (!a) return ADM ? '' : 'Loading…';
+  const bits = [a.phones ? `📱 ${a.phones} phone${a.phones > 1 ? 's' : ''} signed in` : 'Not signed in yet'];
+  if (a.code) bits.push(`code ${a.code.code} (until ${new Date(a.code.exp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })})`);
+  if (tp(pid, 'minor')) bits.push(a.consent ? `✓ parent permission ${ADM.season}` : `⏳ waiting for parent permission (${ADM.season})`);
+  return bits.join(' · ');
+}
+async function loadAdm() { if (!relayMode() || !isAdmin()) return; try { ADM = await relay('GET', '/admin/status'); for (const pid of Object.keys(ADM.people)) { const el = $('#ast-' + pid); if (el) el.textContent = admStatusLine(pid); } } catch (e) { toast(e.message); } }
+function showCode(pid, r) {
+  const el = $('#acode-' + pid); if (!el) return;
+  el.innerHTML = `<div class="codebox"><div class="bigcode">${esc(r.code)}</div><div class="sub">Single use · expires ${new Date(r.exp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
+    <input readonly value="${esc(r.link)}"><button class="btn block small" data-ashare="${pid}">Send to ${esc(pname(pid))}</button></div>`;
+  el.querySelector('[data-ashare]').onclick = async () => {
+    const text = `Hi ${pname(pid)}! Here's your invite to MTB 12 Team. Open this link on your phone (code ${r.code}):`;
+    if (navigator.share) { try { await navigator.share({ title: 'MTB 12 Team invite', text, url: r.link }); return; } catch { } }
+    try { await navigator.clipboard.writeText(`${text} ${r.link}`); toast('Copied - paste it into a text or email'); } catch { toast('Copy the link above'); }
+  };
+}
 const slug = n => n.toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '').slice(0, 20) || 'person';
 function wireTeamSettings() {
   if ($('#sBuddy')) $('#sBuddy').onchange = e => { setVal(me(), 'settings', 'main', 'buddy', e.target.value || null); render(); };
   if ($('#sShareTr')) $('#sShareTr').onchange = e => setVal(me(), 'settings', 'main', 'shareTraining', e.target.checked || null);
   if (!isAdmin()) return;
+  if (relayMode()) { loadAdm();
+    document.querySelectorAll('[data-ainvite]').forEach(b => b.onclick = async () => { const pid = b.dataset.ainvite;
+      if (ADM?.people?.[pid]?.code && !confirm('This replaces the code that was already sent. Continue?')) return;
+      try { const r = await relay('POST', '/admin/invite', { pid }); showCode(pid, r); loadAdm(); } catch (e) { toast(e.message); } });
+    document.querySelectorAll('[data-asignout]').forEach(b => b.onclick = async () => { const pid = b.dataset.asignout;
+      if (!confirm(`Sign out all of ${pname(pid)}'s phones? Their training stays saved; they'll need a new invite code.`)) return;
+      try { const r = await relay('POST', '/admin/revoke', { pid }); toast(`${r.phones} phone(s) signed out`); if (pid === me()) location.reload(); else loadAdm(); } catch (e) { toast(e.message); } });
+    document.querySelectorAll('[data-adelete]').forEach(b => b.onclick = async () => { const pid = b.dataset.adelete;
+      if (prompt(`This permanently deletes ${pname(pid)}'s training data and permission records, and signs out their phones.\n\nType their name to confirm:`)?.trim().toLowerCase() !== pname(pid).toLowerCase()) return toast('Not deleted');
+      try { await relay('POST', '/admin/delete', { pid });
+        setVal('team', 'people', pid, 'active', false); setVal('team', 'people', pid, 'removed', true); setVal('team', 'people', pid, 'name', null); delete D[pid];
+        toast('Removed and deleted'); render(); } catch (e) { toast(e.message); } });
+  }
   document.querySelectorAll('[data-adm]').forEach(el => el.onchange = () => { const [pid, f] = el.dataset.adm.split('|'); setVal('team', 'people', pid, f, el.value || null); render(); });
   document.querySelectorAll('[data-admchk]').forEach(el => el.onchange = () => { const [pid, f] = el.dataset.admchk.split('|'); setVal('team', 'people', pid, f, f === 'active' ? el.checked : (el.checked || null)); render(); });
   if ($('#aGroupAdd')) $('#aGroupAdd').onclick = () => { const n = $('#aGroup').value.trim(); if (!n) return; const g = 'g' + Date.now().toString(36); setVal('team', 'groups', g, 'name', n); render(); };
@@ -820,7 +937,7 @@ function vTeam(filter) {
      <div class="day ${isCoach(r.pid) ? 'coach' : ''}">${esc(pname(r.pid).slice(0, 2))}<small>${r.w === 0 ? 'soon' : r.w > 12 ? 'done' : 'wk ' + r.w}</small></div>
      <div class="grow"><h3>${esc(pname(r.pid))}${isCoach(r.pid) ? ' <span class="sub">(coach)</span>' : ''}</h3>
      <div class="sub">${r.w === 0 ? 'Starts ' + fmt(startISO(r.pid)) : r.w > 12 ? 'Program complete' : (r.brk ? 'Break week · ' : '') + `This week ${r.done}/${r.n}`}${r.pct != null ? ` · sets ${r.pct}%` : ''} · last ${r.last ? fmt(r.last, { month: 'short', day: 'numeric' }) : '–'}</div>
-     <div>${r.quiet ? '<span class="chip Skipped">quiet 7+ days</span>' : ''}${r.behind ? '<span class="chip Partial">behind this week</span>' : ''}${r.deadline ? `<span class="chip">🎯 ${fmt(r.deadline, { month: 'short', day: 'numeric' })}</span>` : ''}${r.strava ? '<span class="chip">Strava ✓</span>' : ''}${head && groupOf(r.pid) ? `<span class="chip">${esc(groupName(groupOf(r.pid)))}</span>` : ''}</div></div></a>`).join('')
+     <div>${(T_()._pending || []).includes(r.pid) ? '<span class="chip Partial">awaiting parent permission</span>' : ''}${r.quiet ? '<span class="chip Skipped">quiet 7+ days</span>' : ''}${r.behind ? '<span class="chip Partial">behind this week</span>' : ''}${r.deadline ? `<span class="chip">🎯 ${fmt(r.deadline, { month: 'short', day: 'numeric' })}</span>` : ''}${r.strava ? '<span class="chip">Strava ✓</span>' : ''}${head && groupOf(r.pid) ? `<span class="chip">${esc(groupName(groupOf(r.pid)))}</span>` : ''}</div></div></a>`).join('')
      : `<div class="card sub">No athletes to show yet${head ? '' : ' in your group'}. The admin assigns athletes to groups in Settings - Admin.</div>`}`;
 }
 function vAthlete(arg) {
@@ -859,6 +976,11 @@ function scheduleCard() {
 }
 function vSettings(a) {
   view().innerHTML = `<h1>Settings</h1><div class="card">
+   ${relayMode() ? `<div>Signed in as <b>${esc(pname(me()))}</b> with an invite code.</div>
+     <label class="f">My default track for strength sessions</label><select id="sTrack">${['Home', 'Gym'].map(x => `<option ${defTrack(me()) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+     <label class="f">Default rest timer between sets (seconds)</label><input id="sRest" inputmode="numeric" value="${esc(cfg.restSec)}">
+     <button class="btn block" id="sSaveR">Save</button><button class="btn block sec small" id="sSignOut">Sign out of this phone</button></div>` : `
+   ${!configured() ? `<div class="card sub">Got an invite code? <a href="#" id="sUseCode">Use it here</a>.</div>` : ''}
    ${people().length ? `<label class="f">Who is using this phone?</label><select id="sMe"><option value="">Choose…</option>${people().sort((a, b) => pname(a).localeCompare(pname(b))).map(p => `<option value="${p}" ${cfg.me === p ? 'selected' : ''}>${esc(pname(p))}</option>`).join('')}</select>`
      : `<input type="hidden" id="sMe" value=""><div class="sub">Fill in the GitHub details below and tap <b>Save &amp; sync</b> - then pick your name.</div>`}
    <label class="f">My default track for strength sessions</label><select id="sTrack">${['Home', 'Gym'].map(x => `<option ${(cfg.me ? defTrack(cfg.me) : 'Home') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
@@ -868,7 +990,8 @@ function vSettings(a) {
    <label class="f">GitHub token (fine-grained, Contents: read & write on that repo only)</label><input id="sTok" type="password" autocomplete="off" value="${esc(cfg.token)}">
    <label class="f">Default rest timer between sets (seconds)</label><input id="sRest" inputmode="numeric" value="${esc(cfg.restSec)}">
    <details class="mt"><summary class="sub">Advanced</summary><label class="f">API base URL</label><input id="sApi" autocapitalize="off" value="${esc(cfg.api)}"></details>
-   <button class="btn block" id="sSave">Save & sync</button></div>
+   <button class="btn block" id="sSave">Save & sync</button>
+   ${configured() && !relayMode() ? `<details class="mt"><summary class="sub">Switch this phone to an invite code</summary><input id="sCodeSw" placeholder="ABCD-EFGH"><button class="btn block sec small" id="sCodeSwGo">Use invite code</button></details>` : ''}</div>`}
    ${configured() && P ? myTeamCard() : ''}
    ${configured() && P ? stravaSettings() : ''}
    ${configured() && P ? scheduleCard() : ''}
@@ -882,7 +1005,11 @@ function vSettings(a) {
    <button class="btn block sec" id="sExport">Download backup (JSON)</button>
    <button class="btn block danger" id="sReset">Clear data on this phone</button>
    <p class="sub mt">MTB 12 Team (pilot) · app v${APP_VERSION}</p></div>`;
-  $('#sSave').onclick = async () => {
+  if ($('#sUseCode')) $('#sUseCode').onclick = e => { e.preventDefault(); vSetup(); };
+  if ($('#sCodeSwGo')) $('#sCodeSwGo').onclick = () => { const c = $('#sCodeSw').value.trim(); if (!c) return; cfg = { ...cfg, me: '', token: '' }; LS.set('cfg', cfg); vJoin(c); };
+  if ($('#sSaveR')) $('#sSaveR').onclick = () => { cfg = { ...cfg, restSec: +$('#sRest').value || 60 }; LS.set('cfg', cfg); if (defTrack(me()) !== $('#sTrack').value) setVal(me(), 'settings', 'main', 'defaultTrack', $('#sTrack').value); toast('Saved'); };
+  if ($('#sSignOut')) $('#sSignOut').onclick = () => { if (confirm('Sign out of this phone? Your training stays saved; you will need a new invite code from your coach to sign back in.')) { Object.keys(localStorage).filter(k => k.startsWith('mtbteam.')).forEach(k => localStorage.removeItem(k)); location.href = location.pathname; } };
+  if ($('#sSave')) $('#sSave').onclick = async () => {
     cfg = { ...cfg, me: $('#sMe').value || '', owner: $('#sOwner').value.trim(), repo: $('#sRepo').value.trim(), token: $('#sTok').value.trim(), api: ($('#sApi').value.trim() || 'https://api.github.com'), restSec: +$('#sRest').value || 60 };
     LS.set('cfg', cfg);
     if (!(cfg.owner && cfg.repo && cfg.token)) return toast('Fill in all fields');
@@ -1019,5 +1146,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => { });
 }
-if (!handleStravaReturn()) render();
+const joinCode = new URLSearchParams(location.search).get('join');
+if (joinCode && !configured()) vJoin(joinCode);
+else if (!handleStravaReturn()) render();
 if (configured()) syncNow();
