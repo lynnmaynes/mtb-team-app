@@ -127,3 +127,7 @@ nav#tabs a{font-size:11px;padding:12px 0}
 .bigcode{font-size:30px;font-weight:900;letter-spacing:4px;text-align:center;margin:10px 0;color:var(--acc2);font-variant-numeric:tabular-nums}
 .codebox{border:1px dashed var(--acc);border-radius:12px;padding:10px;margin-top:8px}
 .adm-acts{flex-wrap:wrap;gap:6px}
+.grphead{margin:14px 2px -4px;font-size:13px;color:var(--mute)}.grphead b{color:var(--txt)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+.modal .mbox{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;max-width:420px;width:100%}
+.modal h3{margin:0 0 8px}

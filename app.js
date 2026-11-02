@@ -6,7 +6,7 @@
  * merge field-by-field: newest edit wins, nothing else is overwritten.
  */
 'use strict';
-const APP_VERSION = 'team-2.0.1';
+const APP_VERSION = 'team-2.1.0';
 const STRAVA_CLIENT_ID = '292465';
 const INTRO_VIDEO = 'https://www.youtube.com/watch?v=lclyYasr43Y';
 function introCard(full) {   // the booklet asks every new starter to watch this first
@@ -26,6 +26,7 @@ const LS = {
   set(k, v) { try { localStorage.setItem('mtbteam.' + k, JSON.stringify(v)); } catch (e) { toast('Phone storage full or blocked'); } }
 };
 let cfg = LS.get('cfg', { owner: '', repo: 'mtb-team-data', token: '', me: '', api: 'https://api.github.com', restSec: 60 });
+if (cfg.restOverride === undefined) { cfg = { ...cfg, restOverride: 0 }; delete cfg.restSec; LS.set('cfg', cfg); }   // 2.9: old default rest no longer overrides the program
 let P = LS.get('program', null);              // program definition
 let D = LS.get('data', {});                   // { lynn:{...}, jarom:{...}, shared:{...} }
 let shas = LS.get('shas', {});
@@ -381,7 +382,56 @@ function lastTime(who, exid, cur) {   // most recent earlier gym session where t
   }
   return null;
 }
-const restTxt = s => !s ? '0 (superset)' : (s >= 60 ? Math.floor(s / 60) + 'm' : '') + (s % 60 ? ' ' + (s % 60) + 's' : '');
+const restTxt = s => !s ? 'none' : ((s >= 60 ? Math.floor(s / 60) + 'm' : '') + (s % 60 ? ' ' + (s % 60) + 's' : '')).trim();
+// Book method: exercises with the same letter are done back-to-back as one round (0w = no rest), then rest for the time
+// printed on the last one, then back to the first for the next round. The rest timer follows this unless ⚙ overrides it.
+const grpOf = (pl, pe) => pl.exercises.filter(e => e.group === pe.group);
+function restInfo(pl, pe) {
+  const g = grpOf(pl, pe), i = pl.exercises.indexOf(pe), nx = pl.exercises[i + 1];
+  if (!pe.rest_sec && nx) return `no rest - straight to ${nx.order}`;
+  return g.length > 1 ? `rest ${restTxt(pe.rest_sec)} after each round` : `rest ${restTxt(pe.rest_sec)} between sets`;
+}
+function grpHead(pl, pe) {
+  const g = grpOf(pl, pe); if (g.length < 2 || g[0] !== pe) return '';
+  const last = g[g.length - 1];
+  return `<div class="grphead"><b>${esc(pe.group)}: ${g.map(e => e.order).join(' → ')}</b> back-to-back, no rest between · rest ${restTxt(last.rest_sec)} · ${pe.sets} rounds</div>`;
+}
+function planExFor(lid) {
+  const m = lid.match(/^(.+?-.+?)-(G-)?([A-Z]\d?)-S(\d+)$/); if (!m) return null;
+  const s = P._sess[m[1]]; if (!s) return null;
+  const pl = plan(m[2] ? s.gym_plan_id : s.plan_id); if (!pl) return null;
+  const i = pl.exercises.findIndex(e => e.order === m[3]); return i < 0 ? null : { pl, pe: pl.exercises[i], i, n: +m[4] };
+}
+function restForSet(lid) {
+  if (cfg.restOverride) return startRest(cfg.restOverride, 'Rest (your ⚙ setting)');
+  const x = planExFor(lid); if (!x) return startRest(60);
+  const { pl, pe, i, n } = x, nx = pl.exercises[i + 1];
+  if (!pe.rest_sec && nx) { stopRest(); return toast(`No rest - straight to ${nx.order} ${exById(nx.exercise_id).name}`); }
+  const g = grpOf(pl, pe), more = n < pe.sets;
+  const lbl = more ? (g.length > 1 ? `Rest → round ${n + 1} (${g[0].order})` : `Rest → set ${n + 1}`) : (nx ? `Rest → ${nx.order}` : 'Rest');
+  startRest(pe.rest_sec || 60, lbl);
+}
+let restWarned = false;
+function restOverrideWarn() {
+  if (!cfg.restOverride || restWarned) return; restWarned = true;
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div class="mbox"><h3>Rest override is on</h3><p>Your ⚙ rest timer (<b>${cfg.restOverride}s</b> after every set) is overriding the program's recommended rest times.</p>
+    <p class="sub">The program: no rest between exercises with the same letter, then the printed rest after each round.</p>
+    <button class="btn block" id="mProg">Use the program's rest times</button><button class="btn block sec" id="mKeep">Keep ${cfg.restOverride}s</button></div>`;
+  document.body.appendChild(m);
+  m.querySelector('#mKeep').onclick = () => m.remove();
+  m.querySelector('#mProg').onclick = () => { cfg = { ...cfg, restOverride: 0 }; LS.set('cfg', cfg); m.remove(); toast('Following the program rest times'); };
+}
+function restSettingHtml() {
+  return `<label class="f">Rest timer override (seconds)</label><input id="sRest" inputmode="numeric" placeholder="Blank = follow the program (recommended)" value="${esc(cfg.restOverride || '')}">
+   <div class="sub">Leave blank and the rest timer follows the program: no rest between exercises with the same letter, then the printed rest after each round.</div>
+   ${cfg.restOverride ? `<div class="warnbox">Override on: ${cfg.restOverride}s after every set, instead of the program's rest times.</div>` : ''}`;
+}
+function readRestSetting() {   // returns the new override (0 = follow the program); asks before turning an override on or changing it
+  const v = Math.max(0, Math.round(+$('#sRest').value || 0));
+  if (v && v !== cfg.restOverride && !confirm(`Override the program's rest times?\n\nThe rest timer will run ${v}s after every set, including between exercises with the same letter where the program says no rest (0w).\n\nLeave the box blank to follow the program.`)) return cfg.restOverride || 0;
+  return v;
+}
 
 /* ---------------- views ---------------- */
 const view = () => $('#view');
@@ -539,16 +589,16 @@ function vSession(id) {
   for (const pe of pl.exercises) {
     const ex = exById(pe.exercise_id); const secs = pe.target_type === 'seconds';
     const nm = ex.video_url ? `<a href="${esc(ex.video_url)}" target="_blank" rel="noopener">${esc(ex.name)}</a>` : esc(ex.name);
-    html += `<div class="card ex"><h3><span class="sub">${pe.order}</span> ${nm}</h3>
-      <div class="meta">${pe.sets} sets × <b>${esc(pe.target)}</b>${pe.per_side ? ' ' + esc(pe.per_side) : ''} · book rest ${restTxt(pe.rest_sec)}${ex.equipment !== 'Bodyweight' ? ' · ' + esc(ex.equipment) : ''}
+    html += grpHead(pl, pe) + `<div class="card ex"><h3><span class="sub">${pe.order}</span> ${nm}</h3>
+      <div class="meta">${pe.sets} sets × <b>${esc(pe.target)}</b>${pe.per_side ? ' ' + esc(pe.per_side) : ''} · ${restInfo(pl, pe)}${ex.equipment !== 'Bodyweight' ? ' · ' + esc(ex.equipment) : ''}
       ${pe.drop_set ? '<br><b>Triple drop set:</b> log the starting weight and first-drop reps' : ''}
       ${secs && !pe.sprint ? `<button class="timerbtn" data-hold="${pe.target_max || 0}">⏱ ${pe.target_max ? pe.target_max + 's timer' : 'stopwatch'}</button>` : ''}</div>`;
     if (gym) { const lt = lastTime(me(), pe.exercise_id, s); if (lt) html += `<div class="last">Last time: ${lt}</div>`; }
     if (pe.sprint) {
-      const box = `sp-${id}-${pe.order}`; const rest = cfg.restSec || 60;
+      const box = `sp-${id}-${pe.order}`; const rest = cfg.restOverride || 60;
       TCFG[box] = { reps: pe.sets, work: pe.target_max, rest, label: 'Sprint',
         onWork: i => { const lid = setId(s, pe, i, 'Gym'); setVal(me(), 'gsets', lid, 'secs', pe.target_max); setVal(me(), 'gsets', lid, 'done', true); autoDate(id); markSet('gsets', lid); } };
-      html += `<div class="sub">${pe.sets} × ${pe.target_max}s all-out sprint, ${rest}s easy spin between (change in ⚙ rest timer).</div>` + timerBox(box, pe.sets, pe.target_max);
+      html += `<div class="sub">${pe.sets} × ${pe.target_max}s all-out sprint, ${rest}s easy spin between (change with the ⚙ rest override).</div>` + timerBox(box, pe.sets, pe.target_max);
     }
     for (let n = 1; n <= pe.sets; n++) {
       const lid = setId(s, pe, n, t); const k = `${me()}|${coll}|${lid}`; const r = rec(me(), coll, lid) || {};
@@ -571,7 +621,7 @@ function vSession(id) {
     <div><label class="f">My RPE (1-10)</label>${selectHtml(`${me()}|sessions|${id}|rpe`, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], val(me(), 'sessions', id, 'rpe'))}</div></div>
     <label class="f">Session notes</label><textarea data-f="${me()}|sessions|${id}|notes">${esc(val(me(), 'sessions', id, 'notes') || '')}</textarea>
     <button class="btn block" data-finish="${id}">Finish workout ✓</button></div>${stravaStatus(id)}`;
-  view().innerHTML = html; paintT();
+  view().innerHTML = html; paintT(); restOverrideWarn();
 }
 function markSet(coll, lid) { const b = document.querySelector(`[data-done="${coll}|${lid}"]`); if (b) b.classList.add('on'); const i = document.querySelector(`[data-f="${me()}|${coll}|${lid}|secs"]`); if (i) i.value = val(me(), coll, lid, 'secs') ?? ''; }
 function selectHtml(key, opts, cur, ph) {
@@ -981,7 +1031,7 @@ function vSettings(a) {
   view().innerHTML = `<h1>Settings</h1><div class="card">
    ${relayMode() ? `<div>Signed in as <b>${esc(pname(me()))}</b> with an invite code.</div>
      <label class="f">My default track for strength sessions</label><select id="sTrack">${['Home', 'Gym'].map(x => `<option ${defTrack(me()) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
-     <label class="f">Default rest timer between sets (seconds)</label><input id="sRest" inputmode="numeric" value="${esc(cfg.restSec)}">
+     ${restSettingHtml()}
      <button class="btn block" id="sSaveR">Save</button><button class="btn block sec small" id="sSignOut">Sign out of this phone</button></div>` : `
    ${configured() ? `<div class="codebox" id="switchBox"><b>Switch this phone to an invite code</b><div class="sub">Type the code here (not in any other field). Your training stays as it is.</div><input id="sCodeSw" placeholder="ABCD-EFGH" autocapitalize="characters" autocomplete="off"><button class="btn block small mt" id="sCodeSwGo">Use invite code</button></div>` : ''}
    ${!configured() ? `<div class="card sub">Got an invite code? <a href="#" id="sUseCode">Use it here</a>.</div>` : ''}
@@ -992,7 +1042,7 @@ function vSettings(a) {
    <label class="f">GitHub username (repo owner)</label><input id="sOwner" autocapitalize="off" autocorrect="off" value="${esc(cfg.owner)}">
    <label class="f">Private data repo name</label><input id="sRepo" autocapitalize="off" autocorrect="off" value="${esc(cfg.repo)}">
    <label class="f">GitHub token (fine-grained, Contents: read & write on that repo only)</label><input id="sTok" type="password" autocomplete="off" value="${esc(cfg.token)}">
-   <label class="f">Default rest timer between sets (seconds)</label><input id="sRest" inputmode="numeric" value="${esc(cfg.restSec)}">
+   ${restSettingHtml()}
    <details class="mt"><summary class="sub">Advanced</summary><label class="f">API base URL</label><input id="sApi" autocapitalize="off" value="${esc(cfg.api)}"></details>
    <button class="btn block" id="sSave">Save & sync</button>
 </div>`}
@@ -1012,10 +1062,10 @@ function vSettings(a) {
   if ($('#sUseCode')) $('#sUseCode').onclick = e => { e.preventDefault(); vSetup(); };
   if ($('#admSwitch')) $('#admSwitch').onclick = () => { const b = $('#switchBox'); if (b) { b.scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(() => $('#sCodeSw').focus(), 400); } };
   if ($('#sCodeSwGo')) $('#sCodeSwGo').onclick = () => { const c = $('#sCodeSw').value.trim(); if (!c) return; cfg = { ...cfg, me: '', token: '' }; LS.set('cfg', cfg); vJoin(c); };
-  if ($('#sSaveR')) $('#sSaveR').onclick = () => { cfg = { ...cfg, restSec: +$('#sRest').value || 60 }; LS.set('cfg', cfg); if (defTrack(me()) !== $('#sTrack').value) setVal(me(), 'settings', 'main', 'defaultTrack', $('#sTrack').value); toast('Saved'); };
+  if ($('#sSaveR')) $('#sSaveR').onclick = () => { cfg = { ...cfg, restOverride: readRestSetting() }; LS.set('cfg', cfg); render(); if (defTrack(me()) !== $('#sTrack').value) setVal(me(), 'settings', 'main', 'defaultTrack', $('#sTrack').value); toast('Saved'); };
   if ($('#sSignOut')) $('#sSignOut').onclick = () => { if (confirm('Sign out of this phone? Your training stays saved; you will need a new invite code from your coach to sign back in.')) { Object.keys(localStorage).filter(k => k.startsWith('mtbteam.')).forEach(k => localStorage.removeItem(k)); location.href = location.pathname; } };
   if ($('#sSave')) $('#sSave').onclick = async () => {
-    cfg = { ...cfg, me: $('#sMe').value || '', owner: $('#sOwner').value.trim(), repo: $('#sRepo').value.trim(), token: $('#sTok').value.trim(), api: ($('#sApi').value.trim() || 'https://api.github.com'), restSec: +$('#sRest').value || 60 };
+    cfg = { ...cfg, me: $('#sMe').value || '', owner: $('#sOwner').value.trim(), repo: $('#sRepo').value.trim(), token: $('#sTok').value.trim(), api: ($('#sApi').value.trim() || 'https://api.github.com'), restOverride: readRestSetting() };
     LS.set('cfg', cfg);
     if (!(cfg.owner && cfg.repo && cfg.token)) return toast('Fill in all fields');
     if (!cfg.me) { try { await loadTeam(); toast('Now choose your name'); render(); } catch (e) { toast(e.message); } return; }
@@ -1056,7 +1106,7 @@ document.addEventListener('click', e => {
   if (t.dataset.done) {
     const [coll, lid] = t.dataset.done.split('|'); const on = !val(me(), coll, lid, 'done');
     setVal(me(), coll, lid, 'done', on ? true : null); t.classList.toggle('on', on);
-    if (on) { autoDate(lid.split('-').slice(0, 2).join('-')); startRest(cfg.restSec || 60); vib(40); }
+    if (on) { autoDate(lid.split('-').slice(0, 2).join('-')); restForSet(lid); vib(40); }
   } else if (t.dataset.where) {
     const [sid, tr] = t.dataset.where.split('|'); setVal(me(), 'sessions', sid, 'where', tr); render();
   } else if (t.dataset.tstart) { startT(t.dataset.tstart);
@@ -1117,8 +1167,8 @@ setInterval(paintSync, 30000);
 
 /* ---------------- timers, sound, misc ---------------- */
 let rest = null;
-function startRest(sec) {
-  stopRest(); rest = { end: Date.now() + sec * 1000, total: sec * 1000 }; $('#restBar').hidden = false;
+function startRest(sec, lbl = 'Rest') {
+  stopRest(); rest = { end: Date.now() + sec * 1000, total: sec * 1000 }; $('#restBar').hidden = false; $('#restLbl').textContent = lbl;
   $('#restTime').textContent = clock(sec); $('#restProg').style.width = '0%';
   rest.iv = setInterval(() => {
     const left = rest.end - Date.now();
