@@ -1,6 +1,6 @@
 // Service worker (MTB 12 Team): cache the app shell so it opens offline. Data calls to GitHub are never cached.
 // Caches are shared with the two-person app on the same site, so only this app's own caches (mtbteam-shell-*) are ever removed.
-const CACHE = 'mtbteam-shell-team-1.0.0';
+const CACHE = 'mtbteam-shell-team-1.0.1';
 const SHELL = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'icons/team-icon-192.png', 'icons/team-icon-512.png', 'icons/team-apple-touch-180.png', 'icons/team-favicon-32.png', 'icons/team-rider.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k.startsWith('mtbteam-shell-') && k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
