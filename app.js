@@ -6,7 +6,7 @@
  * merge field-by-field: newest edit wins, nothing else is overwritten.
  */
 'use strict';
-const APP_VERSION = 'team-2.2.1';
+const APP_VERSION = 'team-2.3.0';
 const STRAVA_CLIENT_ID = '292465';
 const INTRO_VIDEO = 'https://www.youtube.com/watch?v=lclyYasr43Y';
 function introCard(full) {   // the booklet asks every new starter to watch this first
@@ -451,7 +451,8 @@ function setRow(s, pe, n, t, pt, ptSame, label) {
   if (pe.sprint) inputs = `<button class="timerbtn sprintbtn" data-sprint="${coll}|${lid}|${pe.target_max}">▶ ${pe.target_max}s sprint</button>${num('secs', 'secs')}`;
   else if (gym) inputs = secs ? `<div class="span2">${num('secs', 'secs')}</div>` : num('weight', 'lb') + num('reps', 'reps');
   else inputs = num(secs ? 'secs' : 'reps', secs ? 'secs' : 'reps') + selectHtml(`${k}|band`, P.band_options, r.band, 'band');
-  let h = `<div class="set"><div class="n">${label}</div>${inputs}<button class="done ${r.done ? 'on' : ''}" data-done="${coll}|${lid}">✓</button>`;
+  const canFill = rowEmpty(r) && !r.done && fillFor(s, pe, n, t);
+  let h = `<div class="set">${canFill ? `<button class="n fill" data-fill="${coll}|${lid}" title="Fill from last time">${label}<small>↺</small></button>` : `<div class="n">${label}</div>`}${inputs}<button class="done ${r.done ? 'on' : ''}" data-done="${coll}|${lid}">✓</button>`;
   if (ptSame) {
     const q = rec(pt, coll, lid);
     if (q && (q.reps != null || q.secs != null || q.done || q.band || q.weight != null))
@@ -481,6 +482,45 @@ function roundsCard(s, t, pl, g, pt, ptSame) {
     h += `</div>`;
   }
   return h + `</div>`;
+}
+// Quick fill: last time this exercise was logged on this track (same set number if there), else the program's target
+function fillFor(s, pe, n, t) {
+  if (pe.sprint) return null;
+  const coll = COLL(t), gym = t === 'Gym', idx = P.sessions.indexOf(s);
+  const pick = r => gym ? (r.secs != null && r.weight == null ? { secs: r.secs } : { weight: r.weight ?? null, reps: r.reps ?? null })
+                        : { [r.secs != null ? 'secs' : 'reps']: r.secs ?? r.reps ?? null, band: r.band ?? null };
+  for (let i = idx - 1; i >= 0; i--) {
+    const s2 = P.sessions[i]; if (!isStr(s2)) continue;
+    const recs = setsFor(s2, t).filter(x => x.pe.exercise_id === pe.exercise_id).map(x => [x.n, rec(me(), coll, x.id)])
+      .filter(([, r]) => r && (r.weight != null || r.reps != null || r.secs != null));
+    if (recs.length) return pick((recs.find(([k]) => k === n) || recs[recs.length - 1])[1]);
+  }
+  if (pe.target_max == null) return null;
+  return pe.target_type === 'seconds' ? { secs: pe.target_max } : { reps: pe.target_max };
+}
+const rowEmpty = r => !r || (r.weight == null && r.reps == null && r.secs == null);
+function quickFill(btn) {
+  const [coll, lid] = btn.dataset.fill.split('|'); const x = planExFor(lid); const v = x && fillFor(x.s, x.pe, x.n, x.t); if (!v) return;
+  for (const [f, val_] of Object.entries(v)) { if (val_ == null) continue; setVal(me(), coll, lid, f, val_); const el = document.querySelector(`[data-f="${me()}|${coll}|${lid}|${f}"]`); if (el) el.value = val_; }
+  autoDate(lid.split('-').slice(0, 2).join('-')); btn.outerHTML = `<div class="n">${esc(btn.firstChild.textContent)}</div>`; vib(20);
+}
+const GUIDE = [
+  ['Letters are rounds', `<p>Exercises with the same letter are done <b>back-to-back</b> as one round: A1 → A2 → A3, no rest between them ("0w" in the book).</p>
+    <p>After the last one, rest the printed time, then go back to A1 for the next round. A single letter (C, E…) is just sets of one exercise.</p>
+    <div class="gex"><b>A1</b> Split squat → <b>A2</b> Press up → <span>rest 1m 30s</span> → round 2…</div>`],
+  ['The rest timer does it for you', `<p>Tap <b>✓</b> after each exercise. After a 0w exercise there's no timer, just a note naming the next one. After the last one in a round, the rest timer starts with the program's time.</p>
+    <p><b>At the gym</b>, if equipment isn't free or close together, switch to <b>By exercise</b>: all sets of one exercise, resting the printed time between sets.</p>`],
+  ['Logging is quick', `<p>Tap the <b>row label</b> with ↺ (A1, A2… or the set number) to fill in your numbers from last time, or the program's target the first time. Change only what's different, then tap ✓.</p>
+    <p>Exercises in seconds have a ⏱ timer, circuits have a ▶ sprint button, and <b>Finish workout</b> at the bottom wraps it up.</p>`]];
+function showGuide(force) {
+  if (!force && LS.get('guideSeen', false)) return false;
+  LS.set('guideSeen', true); let i = 0;
+  const m = document.createElement('div'); m.className = 'modal';
+  const paint = () => { m.innerHTML = `<div class="mbox guide"><div class="sub">How the workouts work · ${i + 1} of ${GUIDE.length}</div><h3>${GUIDE[i][0]}</h3>${GUIDE[i][1]}
+    <div class="row mt">${i ? '<button class="btn sec small" id="gBack">Back</button>' : ''}<div class="grow"></div><button class="btn small" id="gNext">${i < GUIDE.length - 1 ? 'Next' : 'Got it'}</button></div></div>`;
+    m.querySelector('#gNext').onclick = () => { if (i < GUIDE.length - 1) { i++; paint(); } else m.remove(); };
+    if (m.querySelector('#gBack')) m.querySelector('#gBack').onclick = () => { i--; paint(); }; };
+  paint(); document.body.appendChild(m); return true;
 }
 function sessBody(s, t, pl, pt, ptSame) {
   const mode = viewMode(s, t, pl); let h = '';
@@ -614,6 +654,10 @@ function vConsentGate() {
   wireParentAsk(consentGate.link, pname(me())); $('#pCheck').onclick = () => syncNow(true);
 }
 
+const KUDOS = ['👍', '🔥', '💪'];
+const kudosOf = sid => (D[me()]?._kudos || {})[sid] || [];
+const kudosChips = sid => kudosOf(sid).map(k => `<span class="chip kchip">${esc(k.e)} ${esc(k.by)}</span>`).join('');
+const kudosLine = sid => kudosOf(sid).length ? `<div class="kudoline">${kudosOf(sid).map(k => `${esc(k.e)} ${esc(k.by)}`).join(' · ')}</div>` : '';
 function sessionCard(s, opts = {}) {
   const d = sessDate(s); const isT = d === todayISO();
   const href = s.type === 'HIIT' ? `#hiit/${s.id}` : `#session/${s.id}`;
@@ -625,7 +669,7 @@ function sessionCard(s, opts = {}) {
     <div class="day d-${s.suggested_day}">${s.suggested_day}<small>${fmt(d, { month: 'numeric', day: 'numeric' })}</small></div>
     <div class="grow"><h3>${s.type === 'HIIT' ? 'HIIT ' + s.n + ' · ' + esc(interval(s.week).focus) : tIcon(mt) + ' Strength ' + s.n + ' of 3'}</h3>
     <div class="sub">${esc(s.type === 'HIIT' ? 'Gym bike / elliptical' : mt === 'Gym' ? s.gym_label : s.label)}${extra}</div>
-    <div>${chip(me(), s.id)}${partner() ? chip(partner(), s.id) : ''}</div></div></a>`;
+    <div>${chip(me(), s.id)}${partner() ? chip(partner(), s.id) : ''}${kudosChips(s.id)}</div></div></a>`;
 }
 function vToday() {
   const t = todayISO(); const { w, brk } = weekInfo();
@@ -683,14 +727,14 @@ function vSession(id) {
   <div class="card grid2">
     <div><label class="f">My date done</label><input type="date" data-f="${me()}|sessions|${id}|dateDone" value="${esc(myDate(me(), id))}"></div>
     <div><label class="f">My status</label>${selectHtml(`${me()}|sessions|${id}|status`, P.status_options, status(me(), id))}</div>
-  </div>${partnerDateNote(id)}`;
+  </div>${partnerDateNote(id)}${kudosLine(id)}`;
   html += sessBody(s, t, pl, pt, ptSame);
   html += `<div class="card"><div class="grid2">
     <div><label class="f">My duration (min)</label><input inputmode="numeric" data-num data-f="${me()}|sessions|${id}|duration" value="${esc(val(me(), 'sessions', id, 'duration') ?? '')}"></div>
     <div><label class="f">My RPE (1-10)</label>${selectHtml(`${me()}|sessions|${id}|rpe`, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], val(me(), 'sessions', id, 'rpe'))}</div></div>
     <label class="f">Session notes</label><textarea data-f="${me()}|sessions|${id}|notes">${esc(val(me(), 'sessions', id, 'notes') || '')}</textarea>
     <button class="btn block" data-finish="${id}">Finish workout ✓</button></div>${stravaStatus(id)}`;
-  view().innerHTML = html; paintT(); restOverrideWarn();
+  view().innerHTML = html; paintT(); if (!showGuide()) restOverrideWarn();
 }
 function markSet(coll, lid) { const b = document.querySelector(`[data-done="${coll}|${lid}"]`); if (b) b.classList.add('on'); const i = document.querySelector(`[data-f="${me()}|${coll}|${lid}|secs"]`); if (i) i.value = val(me(), coll, lid, 'secs') ?? ''; }
 function selectHtml(key, opts, cur, ph) {
@@ -703,7 +747,7 @@ function vHiit(id) {
   const iv = interval(s.week); const k = `${me()}|hiit|${id}`; const v = f => esc(val(me(), 'hiit', id, f) ?? '');
   const pt = partner(); const pr = pt && rec(pt, 'hiit', id);
   view().innerHTML = `<a href="#week/${s.week}" class="sub">‹ Week ${s.week}</a>
-  <h1>HIIT ${s.n} · ${esc(iv.focus)}</h1><div class="sub">Week ${s.week} · suggested ${fmt(sessDate(s))}</div>
+  <h1>HIIT ${s.n} · ${esc(iv.focus)}</h1><div class="sub">Week ${s.week} · suggested ${fmt(sessDate(s))}</div>${kudosLine(id)}
   <div class="card"><b>${iv.reps} × ${iv.work_sec}s work / ${iv.rest_sec}s rest</b> · target ${esc(iv.target_rpm)} (bike)<div class="sub mt">${esc(iv.how_to)}</div>
   <div class="sub">On the elliptical, match the effort and track the resistance level.</div></div>
   ${warmPicker('hbox-' + id)}
@@ -967,6 +1011,7 @@ function adminCard() {
    ${T_().settings?.main?.season && !SEASON_RE.test(T_().settings.main.season) ? '<div class="warnbox">This season value doesn\'t look right. Clear it or type one like 2026-27.</div>' : ''}
    ${relayMode() ? '' : '<div class="warnbox">To make invite codes, sign this phone in with your own invite code first. <button class="btn small mt" id="admSwitch">Enter my invite code</button></div>'}
    <div class="sub mt">Strava places used in this app: <b>${connected}</b> (the Strava API limit of 10 is shared with the two-person app).</div>
+   ${relayMode() ? `<div id="admHealth" class="mt">${healthHtml()}</div>` : ''}
    <h3 class="mt">Ride groups</h3>
    ${gs.filter(g => !T_().groups[g].retired).map(g => `<div class="row mt"><input class="grow" data-f="team|groups|${g}|name" value="${esc(groupName(g))}">
      <button class="btn small sec" data-gretire="${g}">Retire</button></div>`).join('') || '<div class="sub">No groups yet.</div>'}
@@ -994,6 +1039,16 @@ function adminCard() {
    <div class="sub mt">Pilot phase 1: new people join with a GitHub token for mtb-team-data. Invite codes come in phase 2.</div></div>`;
 }
 let ADM = null;   // /admin/status: phones, open invite codes, parent permission per person
+function healthHtml() {
+  const out = []; const ex = ADM?.ghTokenExpires;
+  if (ex) { const d = new Date(ex.replace(' UTC', 'Z').replace(' ', 'T')); const days = Math.round((d - new Date()) / 864e5);
+    const line = `Relay's GitHub key (MTB team relay) expires ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} - in ${days} days.`;
+    out.push(days < 30 ? `<div class="warnbox">${line} Renew it on GitHub (same settings), then run Relay Setup.bat and Deploy Relay.bat on the PC.</div>` : `<div class="sub">✓ ${line}</div>`); }
+  else if (ADM) out.push('<div class="sub">✓ Relay is working (GitHub key has no expiry date).</div>');
+  const up = sv().updated; if (up) { const t = typeof up === 'number' ? up : Date.parse(up); const hrs = (Date.now() - t) / 36e5;
+    out.push(hrs > 6 ? `<div class="warnbox">The Strava check last ran ${Math.round(hrs)} hours ago. Check the Actions tab of mtb-team-data on GitHub.</div>` : `<div class="sub">✓ Strava check ran ${hrs < 1 ? 'within the last hour' : Math.round(hrs) + 'h ago'}.</div>`); }
+  return out.length ? `<b>System health</b>${out.join('')}` : '';
+}
 function admStatusLine(pid) {
   const a = ADM?.people?.[pid]; if (!a) return ADM ? '' : 'Loading…';
   const bits = [a.phones ? `📱 ${a.phones} phone${a.phones > 1 ? 's' : ''} signed in` : 'Not signed in yet'];
@@ -1001,10 +1056,17 @@ function admStatusLine(pid) {
   if (tp(pid, 'minor')) bits.push(a.consent ? `✓ parent permission ${ADM.season}` : `⏳ waiting for parent permission (${ADM.season})`);
   return bits.join(' · ');
 }
-async function loadAdm() { if (!relayMode() || !isAdmin()) return; try { ADM = await relay('GET', '/admin/status'); for (const pid of Object.keys(ADM.people)) { const el = $('#ast-' + pid); if (el) el.textContent = admStatusLine(pid); } } catch (e) { toast(e.message); } }
+async function loadAdm() { if (!relayMode() || !isAdmin()) return; try { ADM = await relay('GET', '/admin/status');
+  for (const pid of Object.keys(ADM.people)) { const el = $('#ast-' + pid); if (el) el.textContent = admStatusLine(pid);
+    const c = ADM.people[pid].code, box = $('#acode-' + pid);
+    if (c && box && !box.innerHTML) { box.innerHTML = `<button class="btn small sec mt" data-aqr="${pid}">Show code + QR</button>`;
+      box.querySelector('button').onclick = () => showCode(pid, { code: c.code, exp: c.exp, link: joinLink(c.code) }); } }
+  const h = $('#admHealth'); if (h) h.innerHTML = healthHtml(); } catch (e) { toast(e.message); } }
+const joinLink = code => `${location.origin}${location.pathname.replace(/[^/]*$/, '')}?join=${code}`;
+function qrSvg(text) { try { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 5, margin: 3, scalable: true }); } catch { return ''; } }
 function showCode(pid, r) {
   const el = $('#acode-' + pid); if (!el) return;
-  el.innerHTML = `<div class="codebox"><div class="bigcode">${esc(r.code)}</div><div class="sub">Single use · expires ${new Date(r.exp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
+  el.innerHTML = `<div class="codebox"><div class="qr">${qrSvg(r.link)}</div><div class="sub center">Scan with the phone's camera to join</div><div class="bigcode">${esc(r.code)}</div><div class="sub">Single use · expires ${new Date(r.exp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
     <input readonly value="${esc(r.link)}"><button class="btn block small" data-ashare="${pid}">Send to ${esc(pname(pid))}</button></div>`;
   el.querySelector('[data-ashare]').onclick = async () => {
     const text = `Hi ${pname(pid)}! Here's your invite to MTB 12 Team. Open this link on your phone (code ${r.code}):`;
@@ -1052,14 +1114,26 @@ function athleteRow(pid) {
   return { pid, w, brk, done, n: ss.length, pct: pl ? Math.round(dn / pl * 100) : null, last, quiet, behind,
     deadline: sharesGoal(pid) ? val(pid, 'goals', 'main', 'deadline') : null, strava: !!(sv().athletes?.[pid] && !sv().athletes[pid].needsReconnect) };
 }
+let TF = null;
+function teamGrid(pids) {
+  const ws = [...Array(12)].map((_, i) => i + 1);
+  return `<div class="card gridwrap"><table class="tgrid"><tr><th></th>${ws.map(w => `<th>${w}</th>`).join('')}</tr>
+   ${pids.map(pid => { const { w } = weekInfo(pid); return `<tr><th class="nm"><a href="#athlete/${pid}">${esc(pname(pid))}</a></th>${ws.map(k => {
+     const ss = P.sessions.filter(s => s.week === k); const d = ss.filter(s => ['Done', 'Partial'].includes(status(pid, s.id))).length;
+     if ((w === 0 || k > w) && !d) return '<td class="fut">·</td>';
+     return `<td class="${d >= ss.length ? 'g5' : d >= 3 ? 'g3' : d ? 'g1' : 'g0'}${k === w ? ' cur' : ''}"><a href="#athlete/${pid}:${k}">${d}</a></td>`; }).join('')}</tr>`; }).join('')}</table>
+   <div class="sub mt">Sessions done each week, out of 5 (3 strength + 2 HIIT). Outlined = this week. Tap a cell to open that week.</div></div>`;
+}
 function vTeam(filter) {
   if (!isCoach()) return vToday();
   const list = coachSees(); const head = roleOf() === 'head';
   const shown = list.filter(p => !filter || filter === 'all' || groupOf(p) === filter || (filter === 'coaches' && isCoach(p)));
   const rows = shown.map(athleteRow).sort((a, b) => (b.quiet + b.behind) - (a.quiet + a.behind) || pname(a.pid).localeCompare(pname(b.pid)));
+  const tv = LS.get('teamView', 'list'); TF = filter;
   view().innerHTML = `<h1>Team</h1><div class="sub">${head ? 'Head coach - all athletes' : 'Ride lead - ' + esc(groupName(groupOf(me())) || 'your group')} · read-only · only what's logged in the app</div>
    ${head ? `<div class="seg mt tseg"><button data-tfilter="all" class="${!filter || filter === 'all' ? 'on' : ''}">All</button>${groups().map(g => `<button data-tfilter="${g}" class="${filter === g ? 'on' : ''}">${esc(groupName(g))}</button>`).join('')}</div>` : ''}
-   ${rows.length ? rows.map(r => `<a class="card sess team ${r.quiet || r.behind ? 'flag' : ''}" href="#athlete/${r.pid}">
+   ${rows.length ? `<div class="seg mt"><button data-tview="list" class="${tv === 'list' ? 'on' : ''}">List</button><button data-tview="grid" class="${tv === 'grid' ? 'on' : ''}">Week grid</button></div>` : ''}
+   ${rows.length && tv === 'grid' ? teamGrid(rows.map(r => r.pid).sort((a, b) => pname(a).localeCompare(pname(b)))) : rows.length ? rows.map(r => `<a class="card sess team ${r.quiet || r.behind ? 'flag' : ''}" href="#athlete/${r.pid}">
      <div class="day ${isCoach(r.pid) ? 'coach' : ''}">${esc(pname(r.pid).slice(0, 2))}<small>${r.w === 0 ? 'soon' : r.w > 12 ? 'done' : 'wk ' + r.w}</small></div>
      <div class="grow"><h3>${esc(pname(r.pid))}${isCoach(r.pid) ? ' <span class="sub">(coach)</span>' : ''}</h3>
      <div class="sub">${r.w === 0 ? 'Starts ' + fmt(startISO(r.pid)) : r.w > 12 ? 'Program complete' : (r.brk ? 'Break week · ' : '') + `This week ${r.done}/${r.n}`}${r.pct != null ? ` · sets ${r.pct}%` : ''} · last ${r.last ? fmt(r.last, { month: 'short', day: 'numeric' }) : '–'}</div>
@@ -1075,7 +1149,8 @@ function vAthlete(arg) {
     return `<div class="card sess"><div class="day d-${s.suggested_day}">${s.suggested_day}<small>${fmt(sessDate(s, pid), { month: 'numeric', day: 'numeric' })}</small></div>
      <div class="grow"><h3>${s.type === 'HIIT' ? 'HIIT ' + s.n : tIcon(t) + ' Strength ' + s.n}</h3>
      <div class="sub">${t ? `${setsDone(pid, s, t)}/${setsFor(s, t).length} sets` : (val(pid, 'hiit', s.id, 'intervals') != null ? val(pid, 'hiit', s.id, 'intervals') + '/' + interval(s.week).reps + ' intervals' : '')}${myDate(pid, s.id) ? ' · ' + fmt(myDate(pid, s.id)) : ''}${val(pid, 'sessions', s.id, 'rpe') ? ' · RPE ' + val(pid, 'sessions', s.id, 'rpe') : ''}</div>
-     <span class="chip ${esc(st)}">${esc(st)}</span></div></div>`; };
+     <span class="chip ${esc(st)}">${esc(st)}</span>
+     ${['Done', 'Partial'].includes(st) ? `<div class="kudos">${KUDOS.map(e => `<button class="kd ${val(me(), 'kudos', `${pid}|${s.id}`, 'e') === e ? 'on' : ''}" data-kudo="${pid}|${s.id}|${e}" aria-label="kudos ${e}">${e}</button>`).join('')}<span class="sub">kudos</span></div>` : ''}</div></div>`; };
   let st = 0; for (let i = 0; i < 7; i++) if ((val(pid, 'stretch', iso(addDays(new Date(), -i)), 's') || []).filter(Boolean).length === 9) st++;
   view().innerHTML = `<a href="#team" class="sub">‹ Team</a><h1>${esc(pname(pid))}</h1>
    <div class="sub">${esc(ROLE_LABEL[roleOf(pid)])}${groupOf(pid) ? ' · ' + esc(groupName(groupOf(pid))) : ''} · started ${fmt(startISO(pid))} · stretches ${st}/7 days this past week</div>
@@ -1125,7 +1200,8 @@ function vSettings(a) {
    ${configured() && P && isAdmin() ? adminCard() : ''}
    <div class="card"><h3>Program</h3>
    <p class="sub">Intro video: 10 common questions from people following the program.</p>
-   <a class="btn block sec" href="${INTRO_VIDEO}" target="_blank" rel="noopener">▶ Watch the intro video</a></div>
+   <a class="btn block sec" href="${INTRO_VIDEO}" target="_blank" rel="noopener">▶ Watch the intro video</a>
+   <button class="btn block sec" id="sGuide">How the workouts work</button></div>
    <div class="card"><h3>Data</h3>
    <div class="sub">Last sync: ${syncState.last ? new Date(syncState.last).toLocaleString() : 'never'}${syncState.err ? `<br><span style="color:var(--bad)">${esc(syncState.err)}</span>` : ''}</div>
    <button class="btn block sec" id="sProg">Reload program from repo</button>
@@ -1158,6 +1234,7 @@ function vSettings(a) {
   };
   $('#sProg').onclick = async () => { try { await loadProgram(); prep(); toast('Program reloaded'); render(); } catch (e) { toast(e.message); } };
   $('#sExport').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify({ exported: new Date().toISOString(), data: D }, null, 1)], { type: 'application/json' })); a.download = `mtb-backup-${todayISO()}.json`; a.click(); };
+  if ($('#sGuide')) $('#sGuide').onclick = () => showGuide(true);
   $('#sReset').onclick = () => { if (confirm('Remove all data stored on this phone? (Data already synced to GitHub stays there.)')) { localStorage.removeItem('mtbteam.data'); localStorage.removeItem('mtbteam.shas'); D = {}; shas = {}; toast('Cleared - syncing'); syncNow(); } };
 }
 
@@ -1184,6 +1261,7 @@ document.addEventListener('click', e => {
   } else if (t.dataset.gview) { setVal(me(), 'settings', 'main', 'gymView', t.dataset.gview); render();
   } else if (t.dataset.ropen) { const j = t.dataset.ropen.lastIndexOf('|'), key = t.dataset.ropen.slice(0, j); (RX[key] = RX[key] || new Set()).add(+t.dataset.ropen.slice(j + 1)); render();
   } else if (t.dataset.sprint) { sprintRun(t);
+  } else if (t.dataset.fill) { quickFill(t);
   } else if (t.dataset.where) {
     const [sid, tr] = t.dataset.where.split('|'); setVal(me(), 'sessions', sid, 'where', tr); render();
   } else if (t.dataset.tstart) { startT(t.dataset.tstart);
@@ -1199,6 +1277,8 @@ document.addEventListener('click', e => {
     if (stravaAthlete()) stravaKick('finish');
     location.hash = '#today';
   } else if (t.dataset.tfilter) { vTeam(t.dataset.tfilter);
+  } else if (t.dataset.tview) { LS.set('teamView', t.dataset.tview); vTeam(TF);
+  } else if (t.dataset.kudo) { const [pid, sid, e] = t.dataset.kudo.split('|'), key = `${pid}|${sid}`; setVal(me(), 'kudos', key, 'e', val(me(), 'kudos', key, 'e') === e ? null : e); render();
   } else if (t.dataset.gdelete) { const g = t.dataset.gdelete; if (!groupUsed(g) && confirm(`Delete the group "${groupName(g) || '(no name)'}" permanently?`)) { setVal('team', 'groups', g, 'deleted', true); render(); }
   } else if (t.dataset.gretire) { const g = t.dataset.gretire; setVal('team', 'groups', g, 'retired', T_().groups[g].retired ? null : true); render();
   } else if (t.dataset.goaldone) {
