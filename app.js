@@ -6,7 +6,7 @@
  * merge field-by-field: newest edit wins, nothing else is overwritten.
  */
 'use strict';
-const APP_VERSION = 'team-2.2.0';
+const APP_VERSION = 'team-2.2.1';
 const STRAVA_CLIENT_ID = '292465';
 const INTRO_VIDEO = 'https://www.youtube.com/watch?v=lclyYasr43Y';
 function introCard(full) {   // the booklet asks every new starter to watch this first
@@ -42,7 +42,8 @@ const isCoach = (pid = me()) => ['head', 'lead'].includes(roleOf(pid));
 const isAdmin = (pid = me()) => !!tp(pid, 'admin');
 const groupOf = pid => tp(pid, 'group') || '';
 const groupName = gid => T_().groups?.[gid]?.name || '';
-const groups = (all = false) => Object.keys(T_().groups || {}).filter(g => all || !T_().groups[g].retired);
+const groups = (all = false) => Object.keys(T_().groups || {}).filter(g => !T_().groups[g].deleted && (all || !T_().groups[g].retired));
+const groupUsed = g => Object.values(T_().people || {}).some(p => p && p.group === g);
 const me = () => cfg.me;
 // a buddy only counts when both people picked each other
 const buddyPick = pid => val(pid, 'settings', 'main', 'buddy') || '';
@@ -967,8 +968,12 @@ function adminCard() {
    ${relayMode() ? '' : '<div class="warnbox">To make invite codes, sign this phone in with your own invite code first. <button class="btn small mt" id="admSwitch">Enter my invite code</button></div>'}
    <div class="sub mt">Strava places used in this app: <b>${connected}</b> (the Strava API limit of 10 is shared with the two-person app).</div>
    <h3 class="mt">Ride groups</h3>
-   ${gs.map(g => `<div class="row mt"><input class="grow" data-f="team|groups|${g}|name" value="${esc(groupName(g))}" ${T_().groups[g].retired ? 'disabled' : ''}>
-     <button class="btn small sec" data-gretire="${g}">${T_().groups[g].retired ? 'Bring back' : 'Retire'}</button></div>`).join('') || '<div class="sub">No groups yet.</div>'}
+   ${gs.filter(g => !T_().groups[g].retired).map(g => `<div class="row mt"><input class="grow" data-f="team|groups|${g}|name" value="${esc(groupName(g))}">
+     <button class="btn small sec" data-gretire="${g}">Retire</button></div>`).join('') || '<div class="sub">No groups yet.</div>'}
+   ${gs.some(g => T_().groups[g].retired) ? `<details class="mt"><summary class="sub">Retired groups (${gs.filter(g => T_().groups[g].retired).length})</summary>
+     ${gs.filter(g => T_().groups[g].retired).map(g => `<div class="row mt"><input class="grow" value="${esc(groupName(g) || '(no name)')}" disabled>
+       <button class="btn small sec" data-gretire="${g}">Bring back</button>${groupUsed(g) ? '' : `<button class="btn small danger" data-gdelete="${g}">Delete</button>`}</div>`).join('')}
+     <div class="sub">A retired group can be deleted once nobody is in it (including inactive people).</div></details>` : ''}
    <div class="row mt"><input id="aGroup" placeholder="New group name"><button class="btn small" id="aGroupAdd">Add</button></div>
    <h3 class="mt">People</h3>
    ${ps.map(pid => `<div class="person ${tp(pid, 'active') === false ? 'off' : ''}"><div class="row"><b class="grow">${esc(pname(pid))}</b><span class="sub">${pid}</span></div>
@@ -1164,6 +1169,7 @@ document.addEventListener('change', e => {
   if (el.hasAttribute('data-num') && v !== '') { const n = Number(v.replace(',', '.')); v = isNaN(n) ? v : n; }
   if ((field === 'rpe' || field === 'q9') && v !== '') v = Number(v);
   if (file_ === 'team' && field === 'season' && v !== '' && !SEASON_RE.test(v)) { toast('Season should look like 2026-27 (leave blank for automatic).'); el.value = T_().settings?.main?.season && SEASON_RE.test(T_().settings.main.season) ? T_().settings.main.season : ''; return; }
+  if (file_ === 'team' && coll === 'groups' && field === 'name' && v === '') { toast('A group needs a name. To stop using it, tap Retire.'); el.value = groupName(key); return; }
   if (coll === 'rides') saveRideDraft(key);   // first entry on a new ride saves its date + rider too
   setVal(file_, coll, key, field, v === '' ? null : v);
   if ((coll === 'sets' || coll === 'gsets') && v !== '' && v !== null && field !== 'band') autoDate(key.split('-').slice(0, 2).join('-'));
@@ -1193,6 +1199,7 @@ document.addEventListener('click', e => {
     if (stravaAthlete()) stravaKick('finish');
     location.hash = '#today';
   } else if (t.dataset.tfilter) { vTeam(t.dataset.tfilter);
+  } else if (t.dataset.gdelete) { const g = t.dataset.gdelete; if (!groupUsed(g) && confirm(`Delete the group "${groupName(g) || '(no name)'}" permanently?`)) { setVal('team', 'groups', g, 'deleted', true); render(); }
   } else if (t.dataset.gretire) { const g = t.dataset.gretire; setVal('team', 'groups', g, 'retired', T_().groups[g].retired ? null : true); render();
   } else if (t.dataset.goaldone) {
     const j = t.dataset.goaldone; const on = !val(me(), 'goals', 'm' + j, 'done'); setVal(me(), 'goals', 'm' + j, 'done', on ? true : null); t.classList.toggle('on', on); if (on) vib(40);
