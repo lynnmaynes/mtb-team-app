@@ -153,3 +153,4 @@ nav#tabs a{font-size:11px;padding:12px 0}
 .kudos{display:flex;gap:6px;align-items:center;margin-top:6px}.kd{background:var(--card2);border:1px solid var(--line);border-radius:16px;padding:3px 9px;font-size:16px;opacity:.55}.kd.on{opacity:1;border-color:var(--acc);background:#123b36}
 .kudoline{margin-top:8px;font-size:14px}.kchip{background:#123b36;color:var(--txt)}
 .tbtns{display:flex;gap:8px}.tbtns .btn{flex:1}
+.mbtns{display:flex;gap:8px;margin-top:14px}.mbtns .btn{flex:1}.mbox p{font-size:14px;line-height:1.45;margin:8px 0;color:var(--txt)}.mbox input{width:100%;box-sizing:border-box;margin-top:6px}

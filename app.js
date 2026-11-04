@@ -6,7 +6,7 @@
  * merge field-by-field: newest edit wins, nothing else is overwritten.
  */
 'use strict';
-const APP_VERSION = 'team-2.3.2';
+const APP_VERSION = 'team-2.3.3';
 const STRAVA_CLIENT_ID = '292465';
 const INTRO_VIDEO = 'https://www.youtube.com/watch?v=lclyYasr43Y';
 function introCard(full) {   // the booklet asks every new starter to watch this first
@@ -575,9 +575,9 @@ function restSettingHtml() {
    <div class="sub">Leave blank and the rest timer follows the program: no rest between exercises with the same letter, then the printed rest after each round.</div>
    ${cfg.restOverride ? `<div class="warnbox">Override on: ${cfg.restOverride}s after every set, instead of the program's rest times.</div>` : ''}`;
 }
-function readRestSetting() {   // returns the new override (0 = follow the program); asks before turning an override on or changing it
+async function readRestSetting() {   // returns the new override (0 = follow the program); asks before turning an override on or changing it
   const v = Math.max(0, Math.round(+$('#sRest').value || 0));
-  if (v && v !== cfg.restOverride && !confirm(`Override the program's rest times?\n\nThe rest timer will run ${v}s after every set, including between exercises with the same letter where the program says no rest (0w).\n\nLeave the box blank to follow the program.`)) return cfg.restOverride || 0;
+  if (v && v !== cfg.restOverride && !(await ask(`Override the program's rest times?\n\nThe rest timer will run ${v}s after every set, including between exercises with the same letter where the program says no rest (0w).\n\nLeave the box blank to follow the program.`, { ok: 'Override' }))) return cfg.restOverride || 0;
   return v;
 }
 
@@ -1095,13 +1095,13 @@ function wireTeamSettings() {
   if (!isAdmin()) return;
   if (relayMode()) { loadAdm();
     document.querySelectorAll('[data-ainvite]').forEach(b => b.onclick = async () => { const pid = b.dataset.ainvite;
-      if (ADM?.people?.[pid]?.code && !confirm('This replaces the code that was already sent. Continue?')) return;
+      if (ADM?.people?.[pid]?.code && !(await ask('Make a new invite code?\n\nThis replaces the code that was already sent, which stops working.', { ok: 'New code' }))) return;
       try { const r = await relay('POST', '/admin/invite', { pid }); showCode(pid, r); loadAdm(); } catch (e) { toast(e.message); } });
     document.querySelectorAll('[data-asignout]').forEach(b => b.onclick = async () => { const pid = b.dataset.asignout;
-      if (!confirm(`Sign out all of ${pname(pid)}'s phones? Their training stays saved; they'll need a new invite code.`)) return;
+      if (!(await ask(`Sign out all of ${pname(pid)}'s phones?\n\nTheir training stays saved; they'll need a new invite code.`, { ok: 'Sign out', danger: true }))) return;
       try { const r = await relay('POST', '/admin/revoke', { pid }); toast(`${r.phones} phone(s) signed out`); if (pid === me()) location.reload(); else loadAdm(); } catch (e) { toast(e.message); } });
     document.querySelectorAll('[data-adelete]').forEach(b => b.onclick = async () => { const pid = b.dataset.adelete;
-      if (prompt(`This permanently deletes ${pname(pid)}'s training data and permission records, and signs out their phones.\n\nType their name to confirm:`)?.trim().toLowerCase() !== pname(pid).toLowerCase()) return toast('Not deleted');
+      if ((await askText(`Remove ${pname(pid)} and delete their data?\n\nThis permanently deletes their training data and permission records, and signs out their phones.\n\nType their name to confirm:`, pname(pid), { ok: 'Delete', danger: true }))?.trim().toLowerCase() !== pname(pid).toLowerCase()) return toast('Not deleted');
       try { await relay('POST', '/admin/delete', { pid });
         setVal('team', 'people', pid, 'active', false); setVal('team', 'people', pid, 'removed', true); setVal('team', 'people', pid, 'name', null); delete D[pid];
         toast('Removed and deleted'); render(); } catch (e) { toast(e.message); } });
@@ -1225,10 +1225,10 @@ function vSettings(a) {
   if ($('#sUseCode')) $('#sUseCode').onclick = e => { e.preventDefault(); vSetup(); };
   if ($('#admSwitch')) $('#admSwitch').onclick = () => { const b = $('#switchBox'); if (b) { b.scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(() => $('#sCodeSw').focus(), 400); } };
   if ($('#sCodeSwGo')) $('#sCodeSwGo').onclick = () => { const c = $('#sCodeSw').value.trim(); if (!c) return; cfg = { ...cfg, me: '', token: '' }; LS.set('cfg', cfg); vJoin(c); };
-  if ($('#sSaveR')) $('#sSaveR').onclick = () => { cfg = { ...cfg, restOverride: readRestSetting() }; LS.set('cfg', cfg); render(); if (defTrack(me()) !== $('#sTrack').value) setVal(me(), 'settings', 'main', 'defaultTrack', $('#sTrack').value); toast('Saved'); };
-  if ($('#sSignOut')) $('#sSignOut').onclick = () => { if (confirm('Sign out of this phone? Your training stays saved; you will need a new invite code from your coach to sign back in.')) { Object.keys(localStorage).filter(k => k.startsWith('mtbteam.')).forEach(k => localStorage.removeItem(k)); location.href = location.pathname; } };
+  if ($('#sSaveR')) $('#sSaveR').onclick = async () => { const tr = $('#sTrack').value; cfg = { ...cfg, restOverride: await readRestSetting() }; LS.set('cfg', cfg); if (defTrack(me()) !== tr) setVal(me(), 'settings', 'main', 'defaultTrack', tr); render(); toast('Saved'); };
+  if ($('#sSignOut')) $('#sSignOut').onclick = async () => { if (await ask('Sign out of this phone?\n\nYour training stays saved. You will need a new invite code from your coach to sign back in.', { ok: 'Sign out', danger: true })) { Object.keys(localStorage).filter(k => k.startsWith('mtbteam.')).forEach(k => localStorage.removeItem(k)); location.href = location.pathname; } };
   if ($('#sSave')) $('#sSave').onclick = async () => {
-    cfg = { ...cfg, me: $('#sMe').value || '', owner: $('#sOwner').value.trim(), repo: $('#sRepo').value.trim(), token: $('#sTok').value.trim(), api: ($('#sApi').value.trim() || 'https://api.github.com'), restOverride: readRestSetting() };
+    cfg = { ...cfg, me: $('#sMe').value || '', owner: $('#sOwner').value.trim(), repo: $('#sRepo').value.trim(), token: $('#sTok').value.trim(), api: ($('#sApi').value.trim() || 'https://api.github.com'), restOverride: await readRestSetting() };
     LS.set('cfg', cfg);
     if (!(cfg.owner && cfg.repo && cfg.token)) return toast('Fill in all fields');
     if (!cfg.me) { try { await loadTeam(); toast('Now choose your name'); render(); } catch (e) { toast(e.message); } return; }
@@ -1240,7 +1240,7 @@ function vSettings(a) {
   if (a === 'schedule') setTimeout(() => $('#schedCard')?.scrollIntoView({ block: 'start' }), 50);
   wireTeamSettings();
   if ($('#sGarmin')) $('#sGarmin').onchange = e => setVal(me(), 'settings', 'main', 'garmin', e.target.checked);
-  if ($('#sStravaOff')) $('#sStravaOff').onclick = () => { if (confirm('Disconnect Strava?\n\nThe app will stop adding your workouts to Strava and stop bringing in your rides. Anything already on Strava stays there.\n\nTo remove the app from your Strava account completely, open Strava → Settings → My Apps.')) { setVal(me(), 'settings', 'main', 'stravaDisconnect', Date.now()); stravaKick('disconnect'); render(); } };
+  if ($('#sStravaOff')) $('#sStravaOff').onclick = async () => { if (await ask('Disconnect Strava?\n\nThe app will stop adding your workouts to Strava and stop bringing in your rides. Anything already on Strava stays there.\n\nTo remove the app from your Strava account completely, open Strava → Settings → My Apps.', { ok: 'Disconnect', danger: true })) { setVal(me(), 'settings', 'main', 'stravaDisconnect', Date.now()); stravaKick('disconnect'); render(); } };
   if ($('#sCodeGo')) $('#sCodeGo').onclick = () => {
     let t = $('#sCode').value.trim(); if (!t) return;
     if (t.includes('code=')) { const u = new URLSearchParams(t.slice(t.indexOf('?') + 1)); t = u.get('code') + '|' + (u.get('scope') || ''); }
@@ -1249,7 +1249,7 @@ function vSettings(a) {
   $('#sProg').onclick = async () => { try { await loadProgram(); prep(); toast('Program reloaded'); render(); } catch (e) { toast(e.message); } };
   $('#sExport').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify({ exported: new Date().toISOString(), data: D }, null, 1)], { type: 'application/json' })); a.download = `mtb-backup-${todayISO()}.json`; a.click(); };
   if ($('#sGuide')) $('#sGuide').onclick = () => showGuide(true);
-  $('#sReset').onclick = () => { if (confirm('Remove all data stored on this phone? (Data already synced to GitHub stays there.)')) { localStorage.removeItem('mtbteam.data'); localStorage.removeItem('mtbteam.shas'); D = {}; shas = {}; toast('Cleared - syncing'); syncNow(); } };
+  $('#sReset').onclick = async () => { if (await ask('Clear this phone?\n\nThis removes the app\'s data from this phone only. Everything already synced stays saved and comes back on the next sync.', { ok: 'Clear', danger: true })) { localStorage.removeItem('mtbteam.data'); localStorage.removeItem('mtbteam.shas'); D = {}; shas = {}; toast('Cleared - syncing'); syncNow(); } };
 }
 
 /* ---------------- events ---------------- */
@@ -1283,7 +1283,7 @@ document.addEventListener('click', e => {
   } else if (t.dataset.warm !== undefined) {
     setVal(me(), 'settings', 'main', 'warmupMin', +t.dataset.warm); t.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === t));
   } else if (t.dataset.tpause) { pauseT(t.dataset.tpause);
-  } else if (t.dataset.tstop) { if (T && T.box === t.dataset.tstop && !T.done && (T.phase === 'COOLDOWN' || confirm(endAsk()))) endT(true);
+  } else if (t.dataset.tstop) { if (T && T.box === t.dataset.tstop && !T.done) { if (T.phase === 'COOLDOWN') endT(true); else ask(endAsk(), { ok: 'End session', cancel: 'Keep going', danger: true }).then(y => { if (y && T && !T.done) endT(true); }); }
   } else if (t.dataset.introdone) {
     setVal(me(), 'settings', 'main', 'introWatched', true); render();
   } else if (t.dataset.finish) {
@@ -1293,7 +1293,7 @@ document.addEventListener('click', e => {
   } else if (t.dataset.tfilter) { vTeam(t.dataset.tfilter);
   } else if (t.dataset.tview) { LS.set('teamView', t.dataset.tview); vTeam(TF);
   } else if (t.dataset.kudo) { const [pid, sid, e] = t.dataset.kudo.split('|'), key = `${pid}|${sid}`; setVal(me(), 'kudos', key, 'e', val(me(), 'kudos', key, 'e') === e ? null : e); render();
-  } else if (t.dataset.gdelete) { const g = t.dataset.gdelete; if (!groupUsed(g) && confirm(`Delete the group "${groupName(g) || '(no name)'}" permanently?`)) { setVal('team', 'groups', g, 'deleted', true); render(); }
+  } else if (t.dataset.gdelete) { const g = t.dataset.gdelete; if (!groupUsed(g)) ask(`Delete the group "${groupName(g) || '(no name)'}"?\n\nIt's removed permanently.`, { ok: 'Delete', danger: true }).then(y => { if (y) { setVal('team', 'groups', g, 'deleted', true); render(); } });
   } else if (t.dataset.gretire) { const g = t.dataset.gretire; setVal('team', 'groups', g, 'retired', T_().groups[g].retired ? null : true); render();
   } else if (t.dataset.goaldone) {
     const j = t.dataset.goaldone; const on = !val(me(), 'goals', 'm' + j, 'done'); setVal(me(), 'goals', 'm' + j, 'done', on ? true : null); t.classList.toggle('on', on); if (on) vib(40);
@@ -1315,7 +1315,7 @@ document.addEventListener('click', e => {
   } else if (t.dataset.delride) {
     const id = t.dataset.delride;
     if (!rec(me(), 'rides', id)) { rideDraft = null; location.hash = '#rides'; }   // never saved - nothing to delete
-    else if (confirm('Delete this ride?')) { setVal(me(), 'rides', id, 'deleted', true); location.hash = '#rides'; }
+    else ask('Delete this ride?', { ok: 'Delete', danger: true }).then(y => { if (y) { setVal(me(), 'rides', id, 'deleted', true); location.hash = '#rides'; } });
   } else if (t.dataset.rest) {
     if (t.dataset.rest === 'skip') stopRest(); else if (rest) rest.end += 15000;
   } else if (t.dataset.hold !== undefined) {
@@ -1368,6 +1368,23 @@ const vib = p => { try { navigator.vibrate?.(p); } catch { } };
 let wl = null;
 async function wake(on) { try { if (on && 'wakeLock' in navigator) wl = await navigator.wakeLock.request('screen'); else if (!on && wl) { await wl.release(); wl = null; } } catch { } }
 let toastT;
+// In-app dialogs, styled like the app (the browser's own confirm/prompt boxes show the web address, e.g. "lynnmaynes.github.io says").
+// The first paragraph of the message is the title.
+function ask(msg, { ok = 'OK', cancel = 'Cancel', danger = false, input = null } = {}) {
+  return new Promise(res => {
+    const [title, ...rest] = String(msg).split('\n\n');
+    const m = document.createElement('div'); m.className = 'modal';
+    m.innerHTML = `<div class="mbox" role="dialog" aria-modal="true"><h3>${esc(title)}</h3>${rest.map(x => `<p>${esc(x).replace(/\n/g, '<br>')}</p>`).join('')}
+      ${input !== null ? `<input id="mIn" placeholder="${esc(input)}" autocomplete="off">` : ''}
+      <div class="mbtns"><button class="btn sec" id="mNo">${esc(cancel)}</button><button class="btn${danger ? ' danger' : ''}" id="mYes">${esc(ok)}</button></div></div>`;
+    const done = v => { m.remove(); res(v); };
+    m.querySelector('#mNo').onclick = () => done(input !== null ? null : false);
+    m.querySelector('#mYes').onclick = () => done(input !== null ? m.querySelector('#mIn').value : true);
+    m.onclick = e => { if (e.target === m) done(input !== null ? null : false); };
+    document.body.appendChild(m); (m.querySelector('#mIn') || m.querySelector('#mYes')).focus();
+  });
+}
+const askText = (msg, placeholder, opts = {}) => ask(msg, { ...opts, input: placeholder || '' });
 function toast(m) { const t = $('#toast'); t.textContent = m; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 2600); }
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
