@@ -154,3 +154,4 @@ nav#tabs a{font-size:11px;padding:12px 0}
 .kudoline{margin-top:8px;font-size:14px}.kchip{background:#123b36;color:var(--txt)}
 .tbtns{display:flex;gap:8px}.tbtns .btn{flex:1}
 .mbtns{display:flex;gap:8px;margin-top:14px}.mbtns .btn{flex:1}.mbox p{font-size:14px;line-height:1.45;margin:8px 0;color:var(--txt)}.mbox input{width:100%;box-sizing:border-box;margin-top:6px}
+.unitbox{position:relative;display:block;min-width:0}.unitbox input{width:100%;box-sizing:border-box;padding-right:26px}.unitbox span{position:absolute;right:9px;top:50%;transform:translateY(-50%);font-size:13px;color:var(--mute);pointer-events:none}
